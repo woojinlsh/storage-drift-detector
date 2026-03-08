@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-import google.generativeai as genai
+from google import genai # ⬅️ 새로운 라이브러리 임포트 방식으로 변경
 from PIL import Image
 import io
 import json
@@ -23,7 +23,6 @@ time_1 = st.sidebar.time_input("기준 시간 (Time 1)")
 date_2 = st.sidebar.date_input("비교 날짜 (Time 2)")
 time_2 = st.sidebar.time_input("비교 시간 (Time 2)")
 
-# Verkada API는 주로 밀리초(ms) 단위의 타임스탬프를 사용합니다.
 dt1 = datetime.datetime.combine(date_1, time_1)
 dt2 = datetime.datetime.combine(date_2, time_2)
 time_1_ms = int(dt1.timestamp() * 1000)
@@ -33,7 +32,6 @@ time_2_ms = int(dt2.timestamp() * 1000)
 # --- 2. Verkada API & Gemini 연동 함수 ---
 
 def get_verkada_token(api_key):
-    """1. API Key를 이용해 임시 Token을 발급받습니다."""
     url = "https://api.verkada.com/token"
     headers = {
         "x-api-key": api_key,
@@ -47,23 +45,20 @@ def get_verkada_token(api_key):
         return None
 
 def get_verkada_thumbnail(token, cam_id, time_ms):
-    """2. 발급받은 Token으로 특정 시간의 카메라 썸네일을 가져옵니다."""
     url = "https://api.verkada.com/cameras/v1/footage/thumbnails"
     headers = {
-        "x-verkada-auth": token, # Token을 사용한 인증
+        "x-verkada-auth": token, 
         "accept": "image/jpeg"
     }
     params = {
         "camera_id": cam_id,
-        "time_ms": time_ms # 밀리초 단위 시간
+        "time_ms": time_ms
     }
     
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 200:
-        # 이미지를 성공적으로 받아온 경우
         return Image.open(io.BytesIO(response.content))
     elif response.status_code == 303:
-        # API가 이미지 URL로 리다이렉트(또는 JSON으로 URL 반환)하는 경우 대비
         img_url = response.json().get("url")
         img_res = requests.get(img_url)
         return Image.open(io.BytesIO(img_res.content))
@@ -73,8 +68,8 @@ def get_verkada_thumbnail(token, cam_id, time_ms):
 
 def compare_with_gemini(api_key, img1, img2):
     """3. Gemini에 두 사진을 보내 변경점(yes/no)과 설명을 JSON으로 받습니다."""
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # ⬅️ 최신 genai 클라이언트 초기화 및 모델명(2.5-flash) 변경
+    client = genai.Client(api_key=api_key)
     
     prompt = """
     Look at these two images taken from the same camera at different times.
@@ -84,7 +79,10 @@ def compare_with_gemini(api_key, img1, img2):
     2. "description": a brief explanation of what changed or what the current state is.
     """
     try:
-        response = model.generate_content([prompt, img1, img2])
+        response = client.models.generate_content(
+            model='gemini-2.5-flash', # 최신 모델 적용
+            contents=[prompt, img1, img2]
+        )
         result_text = response.text.strip().replace('```json', '').replace('```', '')
         return json.loads(result_text)
     except Exception as e:
@@ -92,14 +90,12 @@ def compare_with_gemini(api_key, img1, img2):
         return None
 
 def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
-    """4. Helix API로 두 사진 비교 결과(yes/no)와 설명을 전송합니다."""
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
     headers = {
         "x-verkada-auth": token,
         "content-type": "application/json",
         "accept": "application/json"
     }
-    # Helix 이벤트 생성 페이로드 규격
     payload = {
         "camera_id": cam_id,
         "event_type_uid": event_uid,
@@ -107,7 +103,7 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
         "attributes": {
             "changed": changed_status,
             "description": description,
-            "org_id": org_id # 필요에 따라 속성으로 추가
+            "org_id": org_id 
         }
     }
     
@@ -121,16 +117,13 @@ st.title("👀 Verkada & Gemini AI 자동 감시 시스템")
 st.write("지정된 두 시간의 카메라 화면을 비교하고, 물건 배치가 달라지거나 없어진 항목이 있으면 Helix에 기록합니다.")
 
 if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
-    # 필수 입력값 검증
     if not all([verkada_api_key, gemini_api_key, camera_id, event_type_uid]):
         st.warning("사이드바에서 API Key, Camera ID, Event Type UID를 모두 입력해 주세요!")
     else:
-        # Step 1: Verkada Token 발급
         with st.spinner("Verkada API 토큰을 발급받는 중..."):
             v_token = get_verkada_token(verkada_api_key)
             
         if v_token:
-            # Step 2: 썸네일 가져오기
             with st.spinner("카메라 썸네일을 다운로드하는 중..."):
                 img1 = get_verkada_thumbnail(v_token, camera_id, time_1_ms)
                 img2 = get_verkada_thumbnail(v_token, camera_id, time_2_ms)
@@ -142,7 +135,6 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                 with col2:
                     st.image(img2, caption=f"비교 시간: {dt2.strftime('%Y-%m-%d %H:%M:%S')}")
                     
-                # Step 3: Gemini 분석
                 with st.spinner("Gemini AI가 두 사진을 정밀 비교하는 중..."):
                     gemini_result = compare_with_gemini(gemini_api_key, img1, img2)
                     
@@ -154,9 +146,7 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     st.markdown(f"**변경 사항 발생 여부:** `{changed.upper()}`")
                     st.info(f"**상세 설명:** {desc}")
                     
-                    # Step 4: Helix로 결과 전송
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
-                        # 이벤트 기록 시간은 두 번째 사진(현재 상태)을 기준으로 합니다.
                         helix_res = send_to_verkada_helix(
                             v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
