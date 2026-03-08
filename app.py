@@ -30,7 +30,6 @@ time_2 = st.sidebar.time_input("비교 시간 (Time 2)")
 dt1 = datetime.datetime.combine(date_1, time_1).replace(tzinfo=local_tz)
 dt2 = datetime.datetime.combine(date_2, time_2).replace(tzinfo=local_tz)
 
-# 썸네일용(초 단위)과 Helix용(밀리초 단위) 시간 분리
 time_1_sec = int(dt1.timestamp())
 time_2_sec = int(dt2.timestamp())
 
@@ -79,14 +78,14 @@ def get_verkada_thumbnail(token, cam_id, time_sec):
 def compare_with_gemini(api_key, img1, img2):
     client = genai.Client(api_key=api_key)
     
-    # 💡 수정 1: 프롬프트에서 글자 수와 줄바꿈 제한을 강력하게 지시합니다.
+    # 💡 수정 1: 길이 제한을 풀고, "최대한 상세하게 묘사"하도록 지시합니다.
     prompt = """
     제공된 두 장의 사진은 같은 카메라에서 다른 시간에 촬영된 것입니다.
     두 사진을 비교하여 차이점이 있는지 분석해 주세요. 
     
     응답은 반드시 아래 두 개의 키를 포함하는 엄격한 JSON 형식으로만 작성해야 합니다:
     1. "changed": 차이가 있다면 "yes", 없다면 "no" (반드시 영어 소문자).
-    2. "description": 무엇이 변경되었는지 **반드시 한국어로, 50자 이내의 아주 짧고 간결한 단일 문장으로** 작성해 주세요. 절대 줄바꿈을 포함하지 마세요. (예: "책상 위 흰색 머그컵이 사라졌습니다.")
+    2. "description": 무엇이 변경되었는지, 혹은 현재 상태가 어떤지에 대해 **최대한 상세하고 구체적으로 한국어로** 묘사해 주세요. 줄바꿈 기호를 사용하지 말고 자연스럽게 이어서 작성해 주세요.
     """
     try:
         response = client.models.generate_content(
@@ -99,7 +98,8 @@ def compare_with_gemini(api_key, img1, img2):
         st.error(f"Gemini 분석 오류: {e}")
         return None
 
-def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
+# 💡 파라미터에 description_cont 추가
+def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, description_cont, org_id):
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
     
     params = {"org_id": org_id}
@@ -107,10 +107,13 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
         "x-verkada-auth": token,
         "content-type": "application/json"
     }
+    
+    # 💡 페이로드에 description_cont 필드 추가
     payload = {
         "attributes": {
             "changed": changed_status,
-            "description": description
+            "description": description,
+            "description_cont": description_cont
         },
         "event_type_uid": event_uid,
         "camera_id": cam_id,
@@ -150,20 +153,29 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     
                 if gemini_result:
                     changed = gemini_result.get("changed", "no")
-                    desc = gemini_result.get("description", "설명 없음")
+                    full_desc = gemini_result.get("description", "설명 없음")
                     
-                    # 💡 수정 2: 파이썬에서 보내기 직전에 안전하게 글자 수를 자르고 줄바꿈을 없앱니다.
-                    desc = desc.replace('\n', ' ').strip()
-                    if len(desc) > 80:
-                        desc = desc[:77] + "..."
+                    # 혹시 모를 줄바꿈 방지
+                    full_desc = full_desc.replace('\n', ' ').strip()
+                    
+                    # 💡 수정 2: 255자 한계를 넘지 않도록 250자 기준으로 자르기
+                    if len(full_desc) > 250:
+                        desc_1 = full_desc[:250]
+                        desc_2 = full_desc[250:500] # 두 번째 필드도 255자 제한일 테니 최대 500자까지만 전송
+                    else:
+                        desc_1 = full_desc
+                        desc_2 = ""
                     
                     st.subheader("🤖 Gemini 분석 결과")
                     st.markdown(f"**변경 사항 발생 여부:** `{changed.upper()}`")
-                    st.info(f"**상세 설명(안전 전송용):** {desc}")
+                    st.info(f"**상세 설명 (파트 1):** {desc_1}")
+                    if desc_2:
+                        st.info(f"**상세 설명 (파트 2):** {desc_2}")
                     
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
+                        # 💡 함수 호출 시 desc_1과 desc_2를 모두 넘깁니다.
                         helix_res = send_to_verkada_helix(
-                            v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
+                            v_token, camera_id, event_type_uid, time_2_ms, changed, desc_1, desc_2, verkada_org_id
                         )
                         
                     if helix_res.status_code in [200, 201, 202]:
