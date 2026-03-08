@@ -5,6 +5,7 @@ from PIL import Image
 import io
 import json
 import datetime
+import zoneinfo # 타임존 처리를 위한 표준 라이브러리 추가
 
 st.set_page_config(page_title="Verkada & Gemini 자동 감시 시스템", layout="wide")
 
@@ -12,19 +13,26 @@ st.set_page_config(page_title="Verkada & Gemini 자동 감시 시스템", layout
 st.sidebar.header("⚙️ 주요 구성 정보 입력")
 verkada_api_key = st.sidebar.text_input("Verkada API Key", type="password")
 gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password")
-verkada_org_id = st.sidebar.text_input("Verkada Org ID", help="예: 607ef9ff-...") # ⬅️ 다시 추가됨
+verkada_org_id = st.sidebar.text_input("Verkada Org ID", help="예: 607ef9ff-...") 
 camera_id = st.sidebar.text_input("Verkada Camera ID")
 event_type_uid = st.sidebar.text_input("Helix Event Type UID")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📸 비교할 시간 설정")
+# 타임존 선택 (기본값: 한국 시간)
+tz_string = st.sidebar.selectbox("타임존 (Timezone)", ["Asia/Seoul", "UTC", "America/New_York", "America/Los_Angeles"])
+local_tz = zoneinfo.ZoneInfo(tz_string)
+
 date_1 = st.sidebar.date_input("기준 날짜 (Time 1)")
 time_1 = st.sidebar.time_input("기준 시간 (Time 1)")
 date_2 = st.sidebar.date_input("비교 날짜 (Time 2)")
 time_2 = st.sidebar.time_input("비교 시간 (Time 2)")
 
-dt1 = datetime.datetime.combine(date_1, time_1)
-dt2 = datetime.datetime.combine(date_2, time_2)
+# 입력받은 시간을 선택한 타임존(예: KST)이 적용된 시간 객체로 생성합니다.
+dt1 = datetime.datetime.combine(date_1, time_1).replace(tzinfo=local_tz)
+dt2 = datetime.datetime.combine(date_2, time_2).replace(tzinfo=local_tz)
+
+# 밀리초(ms) 단위의 정확한 유닉스 타임스탬프(Integer)로 변환합니다.
 time_1_ms = int(dt1.timestamp() * 1000)
 time_2_ms = int(dt2.timestamp() * 1000)
 
@@ -32,7 +40,6 @@ time_2_ms = int(dt2.timestamp() * 1000)
 # --- 2. Verkada API & Gemini 연동 함수 ---
 
 def get_verkada_token(api_key):
-    """1. API Key를 이용해 임시 Token을 발급받습니다."""
     url = "https://api.verkada.com/token"
     headers = {
         "x-api-key": api_key,
@@ -46,7 +53,6 @@ def get_verkada_token(api_key):
         return None
 
 def get_verkada_thumbnail(token, cam_id, time_ms):
-    """2. 발급받은 Token으로 특정 시간의 카메라 썸네일을 가져옵니다."""
     url = "https://api.verkada.com/cameras/v1/footage/thumbnails"
     headers = {
         "x-verkada-auth": token, 
@@ -54,7 +60,7 @@ def get_verkada_thumbnail(token, cam_id, time_ms):
     }
     params = {
         "camera_id": cam_id,
-        "time_ms": time_ms
+        "time_ms": time_ms # 정확한 밀리초 단위 유닉스 타임스탬프
     }
     
     response = requests.get(url, headers=headers, params=params)
@@ -69,7 +75,6 @@ def get_verkada_thumbnail(token, cam_id, time_ms):
         return None
 
 def compare_with_gemini(api_key, img1, img2):
-    """3. Gemini에 두 사진을 보내 변경점(yes/no)과 설명을 JSON으로 받습니다."""
     client = genai.Client(api_key=api_key)
     
     prompt = """
@@ -91,20 +96,15 @@ def compare_with_gemini(api_key, img1, img2):
         return None
 
 def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
-    """4. Helix API로 두 사진 비교 결과(yes/no)와 설명을 전송합니다."""
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
     
-    # ⬅️ org_id는 URL 파라미터(?org_id=...)로 전송
     params = {
         "org_id": org_id
     }
-    
     headers = {
         "x-verkada-auth": token,
         "content-type": "application/json"
     }
-    
-    # ⬅️ 요구하신 curl 규격과 완벽히 일치하는 페이로드 구조
     payload = {
         "attributes": {
             "changed": changed_status,
@@ -112,7 +112,7 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
         },
         "event_type_uid": event_uid,
         "camera_id": cam_id,
-        "time_ms": time_ms
+        "time_ms": time_ms # 정확한 밀리초 단위 유닉스 타임스탬프
     }
     
     response = requests.post(url, headers=headers, params=params, json=payload)
@@ -125,16 +125,13 @@ st.title("👀 Verkada & Gemini AI 자동 감시 시스템")
 st.write("지정된 두 시간의 카메라 화면을 비교하고, 물건 배치가 달라지거나 없어진 항목이 있으면 Helix에 기록합니다.")
 
 if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
-    # 필수 입력값 검증 (verkada_org_id 포함)
     if not all([verkada_api_key, gemini_api_key, verkada_org_id, camera_id, event_type_uid]):
         st.warning("사이드바에서 모든 설정값(API Key, Org ID, Camera ID, Event Type UID)을 입력해 주세요!")
     else:
-        # Step 1: Verkada Token 발급
         with st.spinner("Verkada API 토큰을 발급받는 중..."):
             v_token = get_verkada_token(verkada_api_key)
             
         if v_token:
-            # Step 2: 썸네일 가져오기
             with st.spinner("카메라 썸네일을 다운로드하는 중..."):
                 img1 = get_verkada_thumbnail(v_token, camera_id, time_1_ms)
                 img2 = get_verkada_thumbnail(v_token, camera_id, time_2_ms)
@@ -142,11 +139,10 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
             if img1 and img2:
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.image(img1, caption=f"기준 시간: {dt1.strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.image(img1, caption=f"기준 시간: {dt1.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                 with col2:
-                    st.image(img2, caption=f"비교 시간: {dt2.strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.image(img2, caption=f"비교 시간: {dt2.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                     
-                # Step 3: Gemini 분석
                 with st.spinner("Gemini AI가 두 사진을 정밀 비교하는 중..."):
                     gemini_result = compare_with_gemini(gemini_api_key, img1, img2)
                     
@@ -158,14 +154,13 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     st.markdown(f"**변경 사항 발생 여부:** `{changed.upper()}`")
                     st.info(f"**상세 설명:** {desc}")
                     
-                    # Step 4: Helix로 결과 전송
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
-                        # 함수 호출 시 verkada_org_id 전달
                         helix_res = send_to_verkada_helix(
                             v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
                         
                     if helix_res.status_code in [200, 201, 202]:
-                        st.success("✅ Verkada Helix에 성공적으로 이벤트가 기록되었습니다! 대시보드를 확인해 보세요.")
+                        st.success("✅ Verkada Helix에 성공적으로 이벤트가 기록되었습니다!")
+                        st.caption(f"기록된 시간(Time_ms): {time_2_ms}")
                     else:
                         st.error(f"❌ Helix 전송 실패 ({helix_res.status_code}): {helix_res.text}")
