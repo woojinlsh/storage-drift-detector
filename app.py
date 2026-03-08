@@ -5,7 +5,7 @@ from PIL import Image
 import io
 import json
 import datetime
-import zoneinfo # 타임존 처리를 위한 표준 라이브러리 추가
+import zoneinfo
 
 st.set_page_config(page_title="Verkada & Gemini 자동 감시 시스템", layout="wide")
 
@@ -19,7 +19,6 @@ event_type_uid = st.sidebar.text_input("Helix Event Type UID")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📸 비교할 시간 설정")
-# 타임존 선택 (기본값: 한국 시간)
 tz_string = st.sidebar.selectbox("타임존 (Timezone)", ["Asia/Seoul", "UTC", "America/New_York", "America/Los_Angeles"])
 local_tz = zoneinfo.ZoneInfo(tz_string)
 
@@ -28,11 +27,13 @@ time_1 = st.sidebar.time_input("기준 시간 (Time 1)")
 date_2 = st.sidebar.date_input("비교 날짜 (Time 2)")
 time_2 = st.sidebar.time_input("비교 시간 (Time 2)")
 
-# 입력받은 시간을 선택한 타임존(예: KST)이 적용된 시간 객체로 생성합니다.
 dt1 = datetime.datetime.combine(date_1, time_1).replace(tzinfo=local_tz)
 dt2 = datetime.datetime.combine(date_2, time_2).replace(tzinfo=local_tz)
 
-# 밀리초(ms) 단위의 정확한 유닉스 타임스탬프(Integer)로 변환합니다.
+# 💡 핵심 수정 사항: 썸네일용(초 단위)과 Helix용(밀리초 단위)을 분리합니다.
+time_1_sec = int(dt1.timestamp())
+time_2_sec = int(dt2.timestamp())
+
 time_1_ms = int(dt1.timestamp() * 1000)
 time_2_ms = int(dt2.timestamp() * 1000)
 
@@ -52,15 +53,17 @@ def get_verkada_token(api_key):
         st.error(f"토큰 발급 실패: {response.text}")
         return None
 
-def get_verkada_thumbnail(token, cam_id, time_ms):
+def get_verkada_thumbnail(token, cam_id, time_sec):
     url = "https://api.verkada.com/cameras/v1/footage/thumbnails"
     headers = {
         "x-verkada-auth": token, 
         "accept": "image/jpeg"
     }
+    # 💡 수정한 부분: timestamp 파라미터 사용, 해상도를 hi-res로 고정
     params = {
         "camera_id": cam_id,
-        "time_ms": time_ms # 정확한 밀리초 단위 유닉스 타임스탬프
+        "timestamp": time_sec,
+        "resolution": "hi-res" 
     }
     
     response = requests.get(url, headers=headers, params=params)
@@ -71,7 +74,7 @@ def get_verkada_thumbnail(token, cam_id, time_ms):
         img_res = requests.get(img_url)
         return Image.open(io.BytesIO(img_res.content))
     else:
-        st.error(f"썸네일 로드 실패 ({time_ms}): {response.text}")
+        st.error(f"썸네일 로드 실패 ({time_sec}): {response.text}")
         return None
 
 def compare_with_gemini(api_key, img1, img2):
@@ -112,7 +115,7 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
         },
         "event_type_uid": event_uid,
         "camera_id": cam_id,
-        "time_ms": time_ms # 정확한 밀리초 단위 유닉스 타임스탬프
+        "time_ms": time_ms # Helix는 여전히 밀리초(ms)를 사용합니다.
     }
     
     response = requests.post(url, headers=headers, params=params, json=payload)
@@ -133,8 +136,9 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
             
         if v_token:
             with st.spinner("카메라 썸네일을 다운로드하는 중..."):
-                img1 = get_verkada_thumbnail(v_token, camera_id, time_1_ms)
-                img2 = get_verkada_thumbnail(v_token, camera_id, time_2_ms)
+                # 썸네일 함수에는 초(sec) 단위 변수를 넣습니다.
+                img1 = get_verkada_thumbnail(v_token, camera_id, time_1_sec)
+                img2 = get_verkada_thumbnail(v_token, camera_id, time_2_sec)
                 
             if img1 and img2:
                 col1, col2 = st.columns(2)
@@ -155,12 +159,12 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     st.info(f"**상세 설명:** {desc}")
                     
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
+                        # Helix 함수에는 밀리초(ms) 단위 변수를 넣습니다.
                         helix_res = send_to_verkada_helix(
                             v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
                         
                     if helix_res.status_code in [200, 201, 202]:
                         st.success("✅ Verkada Helix에 성공적으로 이벤트가 기록되었습니다!")
-                        st.caption(f"기록된 시간(Time_ms): {time_2_ms}")
                     else:
                         st.error(f"❌ Helix 전송 실패 ({helix_res.status_code}): {helix_res.text}")
