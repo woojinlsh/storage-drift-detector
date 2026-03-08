@@ -79,15 +79,17 @@ def get_verkada_thumbnail(token, cam_id, time_sec):
         return None
 
 def compare_with_gemini(api_key, img1, img2):
-    """3. Gemini 2.5에 두 사진을 보내 변경점(yes/no)과 설명을 JSON으로 받습니다."""
+    """3. Gemini 2.5에 두 사진을 보내 변경점(yes/no)과 한국어 설명을 JSON으로 받습니다."""
     client = genai.Client(api_key=api_key)
     
+    # 💡 프롬프트를 한국어로 변경하고, 설명(description)을 반드시 한국어로 쓰도록 지시했습니다.
     prompt = """
-    Look at these two images taken from the same camera at different times.
-    Is there any difference between the two photos? Specifically, check for changes in the arrangement of objects or if any items are missing.
-    Respond ONLY with a strictly formatted JSON object containing two keys:
-    1. "changed": string value, strictly "yes" or "no".
-    2. "description": a brief explanation of what changed or what the current state is.
+    제공된 두 장의 사진은 같은 카메라에서 다른 시간에 촬영된 것입니다.
+    두 사진을 비교하여 차이점이 있는지 분석해 주세요. 특히 물건의 배치가 달라졌거나, 새로 생겼거나, 없어진 물건이 있는지 집중적으로 확인해 주세요.
+    
+    응답은 반드시 아래 두 개의 키를 포함하는 엄격한 JSON 형식으로만 작성해야 합니다:
+    1. "changed": 차이가 있다면 "yes", 없다면 "no" (반드시 영어 소문자 "yes" 또는 "no"로만 작성).
+    2. "description": 무엇이 변경되었는지, 혹은 현재 상태가 어떤지에 대한 명확한 설명을 **반드시 한국어**로 작성해 주세요.
     """
     try:
         response = client.models.generate_content(
@@ -107,7 +109,6 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
     params = {
         "org_id": org_id
     }
-    # 💡 원본 API Key 대신 발급받은 token을 사용합니다.
     headers = {
         "x-verkada-auth": token,
         "content-type": "application/json"
@@ -119,7 +120,7 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
         },
         "event_type_uid": event_uid,
         "camera_id": cam_id,
-        "time_ms": time_ms # 밀리초 단위 시간
+        "time_ms": time_ms 
     }
     
     response = requests.post(url, headers=headers, params=params, json=payload)
@@ -162,7 +163,6 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     st.info(f"**상세 설명:** {desc}")
                     
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
-                        # 💡 v_token (발급받은 임시 토큰)을 넘겨줍니다.
                         helix_res = send_to_verkada_helix(
                             v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
@@ -170,13 +170,6 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     if helix_res.status_code in [200, 201, 202]:
                         st.success("✅ Verkada Helix 이벤트가 성공적으로 생성되었습니다!")
                         st.caption(f"기록된 시간(Time_ms): {time_2_ms}")
-                        
-                        # 서버 응답 결괏값을 화면에 출력하여 실제 등록 여부(event_id)를 확인합니다.
-                        with st.expander("응답 데이터(Response Payload) 확인"):
-                            try:
-                                st.json(helix_res.json())
-                            except:
-                                st.write(helix_res.text)
                     else:
                         st.error(f"❌ Helix 전송 실패 ({helix_res.status_code})")
                         st.code(helix_res.text)
