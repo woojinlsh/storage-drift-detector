@@ -30,7 +30,7 @@ time_2 = st.sidebar.time_input("비교 시간 (Time 2)")
 dt1 = datetime.datetime.combine(date_1, time_1).replace(tzinfo=local_tz)
 dt2 = datetime.datetime.combine(date_2, time_2).replace(tzinfo=local_tz)
 
-# 💡 핵심 수정 사항: 썸네일용(초 단위)과 Helix용(밀리초 단위)을 분리합니다.
+# 썸네일용(초 단위)과 Helix용(밀리초 단위) 시간 분리
 time_1_sec = int(dt1.timestamp())
 time_2_sec = int(dt2.timestamp())
 
@@ -41,6 +41,7 @@ time_2_ms = int(dt2.timestamp() * 1000)
 # --- 2. Verkada API & Gemini 연동 함수 ---
 
 def get_verkada_token(api_key):
+    """1. API Key를 이용해 썸네일용 임시 Token을 발급받습니다."""
     url = "https://api.verkada.com/token"
     headers = {
         "x-api-key": api_key,
@@ -54,12 +55,12 @@ def get_verkada_token(api_key):
         return None
 
 def get_verkada_thumbnail(token, cam_id, time_sec):
+    """2. 발급받은 Token으로 특정 시간(초)의 카메라 고화질 썸네일을 가져옵니다."""
     url = "https://api.verkada.com/cameras/v1/footage/thumbnails"
     headers = {
         "x-verkada-auth": token, 
         "accept": "image/jpeg"
     }
-    # 💡 수정한 부분: timestamp 파라미터 사용, 해상도를 hi-res로 고정
     params = {
         "camera_id": cam_id,
         "timestamp": time_sec,
@@ -78,6 +79,7 @@ def get_verkada_thumbnail(token, cam_id, time_sec):
         return None
 
 def compare_with_gemini(api_key, img1, img2):
+    """3. Gemini 2.5에 두 사진을 보내 변경점(yes/no)과 설명을 JSON으로 받습니다."""
     client = genai.Client(api_key=api_key)
     
     prompt = """
@@ -98,14 +100,16 @@ def compare_with_gemini(api_key, img1, img2):
         st.error(f"Gemini 분석 오류: {e}")
         return None
 
-def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
+def send_to_verkada_helix(api_key, cam_id, event_uid, time_ms, changed_status, description, org_id):
+    """4. Helix API로 분석 결과를 전송합니다. (API Key 직접 사용)"""
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
     
     params = {
         "org_id": org_id
     }
+    # 💡 토큰 대신 API Key 원본을 사용합니다.
     headers = {
-        "x-verkada-auth": token,
+        "x-verkada-auth": api_key,
         "content-type": "application/json"
     }
     payload = {
@@ -115,7 +119,7 @@ def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, des
         },
         "event_type_uid": event_uid,
         "camera_id": cam_id,
-        "time_ms": time_ms # Helix는 여전히 밀리초(ms)를 사용합니다.
+        "time_ms": time_ms # 밀리초 단위 시간
     }
     
     response = requests.post(url, headers=headers, params=params, json=payload)
@@ -136,7 +140,6 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
             
         if v_token:
             with st.spinner("카메라 썸네일을 다운로드하는 중..."):
-                # 썸네일 함수에는 초(sec) 단위 변수를 넣습니다.
                 img1 = get_verkada_thumbnail(v_token, camera_id, time_1_sec)
                 img2 = get_verkada_thumbnail(v_token, camera_id, time_2_sec)
                 
@@ -159,12 +162,21 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     st.info(f"**상세 설명:** {desc}")
                     
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
-                        # Helix 함수에는 밀리초(ms) 단위 변수를 넣습니다.
+                        # 💡 v_token 대신 verkada_api_key를 직접 넘깁니다.
                         helix_res = send_to_verkada_helix(
-                            v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
+                            verkada_api_key, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
                         
                     if helix_res.status_code in [200, 201, 202]:
-                        st.success("✅ Verkada Helix에 성공적으로 이벤트가 기록되었습니다!")
+                        st.success("✅ Verkada Helix 이벤트가 성공적으로 생성되었습니다!")
+                        st.caption(f"기록된 시간(Time_ms): {time_2_ms}")
+                        
+                        # 서버 응답 결괏값을 화면에 출력하여 실제 등록 여부를 확인합니다.
+                        with st.expander("응답 데이터(Response Payload) 확인"):
+                            try:
+                                st.json(helix_res.json())
+                            except:
+                                st.write(helix_res.text)
                     else:
-                        st.error(f"❌ Helix 전송 실패 ({helix_res.status_code}): {helix_res.text}")
+                        st.error(f"❌ Helix 전송 실패 ({helix_res.status_code})")
+                        st.code(helix_res.text)
