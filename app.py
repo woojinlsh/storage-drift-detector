@@ -41,7 +41,6 @@ time_2_ms = int(dt2.timestamp() * 1000)
 # --- 2. Verkada API & Gemini 연동 함수 ---
 
 def get_verkada_token(api_key):
-    """1. API Key를 이용해 썸네일/Helix용 임시 Token을 발급받습니다."""
     url = "https://api.verkada.com/token"
     headers = {
         "x-api-key": api_key,
@@ -55,7 +54,6 @@ def get_verkada_token(api_key):
         return None
 
 def get_verkada_thumbnail(token, cam_id, time_sec):
-    """2. 발급받은 Token으로 특정 시간(초)의 카메라 고화질 썸네일을 가져옵니다."""
     url = "https://api.verkada.com/cameras/v1/footage/thumbnails"
     headers = {
         "x-verkada-auth": token, 
@@ -79,17 +77,16 @@ def get_verkada_thumbnail(token, cam_id, time_sec):
         return None
 
 def compare_with_gemini(api_key, img1, img2):
-    """3. Gemini 2.5에 두 사진을 보내 변경점(yes/no)과 한국어 설명을 JSON으로 받습니다."""
     client = genai.Client(api_key=api_key)
     
-    # 💡 프롬프트를 한국어로 변경하고, 설명(description)을 반드시 한국어로 쓰도록 지시했습니다.
+    # 💡 수정 1: 프롬프트에서 글자 수와 줄바꿈 제한을 강력하게 지시합니다.
     prompt = """
     제공된 두 장의 사진은 같은 카메라에서 다른 시간에 촬영된 것입니다.
-    두 사진을 비교하여 차이점이 있는지 분석해 주세요. 특히 물건의 배치가 달라졌거나, 새로 생겼거나, 없어진 물건이 있는지 집중적으로 확인해 주세요.
+    두 사진을 비교하여 차이점이 있는지 분석해 주세요. 
     
     응답은 반드시 아래 두 개의 키를 포함하는 엄격한 JSON 형식으로만 작성해야 합니다:
-    1. "changed": 차이가 있다면 "yes", 없다면 "no" (반드시 영어 소문자 "yes" 또는 "no"로만 작성).
-    2. "description": 무엇이 변경되었는지, 혹은 현재 상태가 어떤지에 대한 명확한 설명을 **반드시 한국어**로 작성해 주세요.
+    1. "changed": 차이가 있다면 "yes", 없다면 "no" (반드시 영어 소문자).
+    2. "description": 무엇이 변경되었는지 **반드시 한국어로, 50자 이내의 아주 짧고 간결한 단일 문장으로** 작성해 주세요. 절대 줄바꿈을 포함하지 마세요. (예: "책상 위 흰색 머그컵이 사라졌습니다.")
     """
     try:
         response = client.models.generate_content(
@@ -103,12 +100,9 @@ def compare_with_gemini(api_key, img1, img2):
         return None
 
 def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
-    """4. Helix API로 분석 결과를 전송합니다. (발급받은 Token 재사용)"""
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
     
-    params = {
-        "org_id": org_id
-    }
+    params = {"org_id": org_id}
     headers = {
         "x-verkada-auth": token,
         "content-type": "application/json"
@@ -158,9 +152,14 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     changed = gemini_result.get("changed", "no")
                     desc = gemini_result.get("description", "설명 없음")
                     
+                    # 💡 수정 2: 파이썬에서 보내기 직전에 안전하게 글자 수를 자르고 줄바꿈을 없앱니다.
+                    desc = desc.replace('\n', ' ').strip()
+                    if len(desc) > 80:
+                        desc = desc[:77] + "..."
+                    
                     st.subheader("🤖 Gemini 분석 결과")
                     st.markdown(f"**변경 사항 발생 여부:** `{changed.upper()}`")
-                    st.info(f"**상세 설명:** {desc}")
+                    st.info(f"**상세 설명(안전 전송용):** {desc}")
                     
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
                         helix_res = send_to_verkada_helix(
