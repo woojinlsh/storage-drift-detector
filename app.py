@@ -12,9 +12,9 @@ st.set_page_config(page_title="Verkada & Gemini 자동 감시 시스템", layout
 st.sidebar.header("⚙️ 주요 구성 정보 입력")
 verkada_api_key = st.sidebar.text_input("Verkada API Key", type="password")
 gemini_api_key = st.sidebar.text_input("Gemini API Key", type="password")
+verkada_org_id = st.sidebar.text_input("Verkada Org ID", help="예: 607ef9ff-...") # ⬅️ 다시 추가됨
 camera_id = st.sidebar.text_input("Verkada Camera ID")
-event_type_uid = st.sidebar.text_input("Helix Event Type UID", help="Helix에 등록된 이벤트 스키마의 고유 ID입니다.")
-# (참고: 불필요해진 org_id 입력칸은 제거했습니다.)
+event_type_uid = st.sidebar.text_input("Helix Event Type UID")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📸 비교할 시간 설정")
@@ -90,26 +90,32 @@ def compare_with_gemini(api_key, img1, img2):
         st.error(f"Gemini 분석 오류: {e}")
         return None
 
-def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description):
+def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
     """4. Helix API로 두 사진 비교 결과(yes/no)와 설명을 전송합니다."""
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
+    
+    # ⬅️ org_id는 URL 파라미터(?org_id=...)로 전송
+    params = {
+        "org_id": org_id
+    }
+    
     headers = {
         "x-verkada-auth": token,
-        "content-type": "application/json",
-        "accept": "application/json"
+        "content-type": "application/json"
     }
+    
+    # ⬅️ 요구하신 curl 규격과 완벽히 일치하는 페이로드 구조
     payload = {
-        "camera_id": cam_id,
-        "event_type_uid": event_uid,
-        "time_ms": time_ms,
         "attributes": {
             "changed": changed_status,
             "description": description
-            # 에러의 원인이었던 org_id를 스키마에 맞게 완전히 제거했습니다.
-        }
+        },
+        "event_type_uid": event_uid,
+        "camera_id": cam_id,
+        "time_ms": time_ms
     }
     
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, params=params, json=payload)
     return response
 
 
@@ -119,9 +125,9 @@ st.title("👀 Verkada & Gemini AI 자동 감시 시스템")
 st.write("지정된 두 시간의 카메라 화면을 비교하고, 물건 배치가 달라지거나 없어진 항목이 있으면 Helix에 기록합니다.")
 
 if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
-    # 필수 입력값 검증
-    if not all([verkada_api_key, gemini_api_key, camera_id, event_type_uid]):
-        st.warning("사이드바에서 API Key, Camera ID, Event Type UID를 모두 입력해 주세요!")
+    # 필수 입력값 검증 (verkada_org_id 포함)
+    if not all([verkada_api_key, gemini_api_key, verkada_org_id, camera_id, event_type_uid]):
+        st.warning("사이드바에서 모든 설정값(API Key, Org ID, Camera ID, Event Type UID)을 입력해 주세요!")
     else:
         # Step 1: Verkada Token 발급
         with st.spinner("Verkada API 토큰을 발급받는 중..."):
@@ -154,12 +160,12 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     
                     # Step 4: Helix로 결과 전송
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
-                        # 수정된 함수 호출 (org_id 제거됨)
+                        # 함수 호출 시 verkada_org_id 전달
                         helix_res = send_to_verkada_helix(
-                            v_token, camera_id, event_type_uid, time_2_ms, changed, desc
+                            v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
                         
                     if helix_res.status_code in [200, 201, 202]:
-                        st.success("✅ Verkada Helix에 성공적으로 이벤트가 기록되었습니다!")
+                        st.success("✅ Verkada Helix에 성공적으로 이벤트가 기록되었습니다! 대시보드를 확인해 보세요.")
                     else:
                         st.error(f"❌ Helix 전송 실패 ({helix_res.status_code}): {helix_res.text}")
