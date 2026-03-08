@@ -41,7 +41,7 @@ time_2_ms = int(dt2.timestamp() * 1000)
 # --- 2. Verkada API & Gemini 연동 함수 ---
 
 def get_verkada_token(api_key):
-    """1. API Key를 이용해 썸네일용 임시 Token을 발급받습니다."""
+    """1. API Key를 이용해 썸네일/Helix용 임시 Token을 발급받습니다."""
     url = "https://api.verkada.com/token"
     headers = {
         "x-api-key": api_key,
@@ -100,16 +100,16 @@ def compare_with_gemini(api_key, img1, img2):
         st.error(f"Gemini 분석 오류: {e}")
         return None
 
-def send_to_verkada_helix(api_key, cam_id, event_uid, time_ms, changed_status, description, org_id):
-    """4. Helix API로 분석 결과를 전송합니다. (API Key 직접 사용)"""
+def send_to_verkada_helix(token, cam_id, event_uid, time_ms, changed_status, description, org_id):
+    """4. Helix API로 분석 결과를 전송합니다. (발급받은 Token 재사용)"""
     url = "https://api.verkada.com/cameras/v1/video_tagging/event"
     
     params = {
         "org_id": org_id
     }
-    # 💡 토큰 대신 API Key 원본을 사용합니다.
+    # 💡 원본 API Key 대신 발급받은 token을 사용합니다.
     headers = {
-        "x-verkada-auth": api_key,
+        "x-verkada-auth": token,
         "content-type": "application/json"
     }
     payload = {
@@ -162,16 +162,16 @@ if st.button("🚀 사진 비교 및 Helix 전송 실행", type="primary"):
                     st.info(f"**상세 설명:** {desc}")
                     
                     with st.spinner("Verkada Helix로 분석 결과를 전송하는 중..."):
-                        # 💡 v_token 대신 verkada_api_key를 직접 넘깁니다.
+                        # 💡 v_token (발급받은 임시 토큰)을 넘겨줍니다.
                         helix_res = send_to_verkada_helix(
-                            verkada_api_key, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
+                            v_token, camera_id, event_type_uid, time_2_ms, changed, desc, verkada_org_id
                         )
                         
                     if helix_res.status_code in [200, 201, 202]:
                         st.success("✅ Verkada Helix 이벤트가 성공적으로 생성되었습니다!")
                         st.caption(f"기록된 시간(Time_ms): {time_2_ms}")
                         
-                        # 서버 응답 결괏값을 화면에 출력하여 실제 등록 여부를 확인합니다.
+                        # 서버 응답 결괏값을 화면에 출력하여 실제 등록 여부(event_id)를 확인합니다.
                         with st.expander("응답 데이터(Response Payload) 확인"):
                             try:
                                 st.json(helix_res.json())
